@@ -499,6 +499,9 @@
         let radiusCircle = null;     // radius visualization ring
         let lastGeocodedQuery = "";  // track to avoid repeating API lookups
         
+        // Event types left unchecked until the user selects them
+        const HIDDEN_BY_DEFAULT = ['AKC Scent Work'];
+
         // ===== EVENT COLORS =====
         const eventColors = {
             'NW1': '#4A90E2',
@@ -694,7 +697,8 @@
                 checkbox.type = 'checkbox';
                 checkbox.id = `type_${type}`;
                 checkbox.value = type;
-                checkbox.checked = true;
+                // AKC trials are opt-in: unchecked on load and on Reset Filters
+                checkbox.checked = !HIDDEN_BY_DEFAULT.includes(type);
                 
                 const label = document.createElement('label');
                 label.htmlFor = `type_${type}`;
