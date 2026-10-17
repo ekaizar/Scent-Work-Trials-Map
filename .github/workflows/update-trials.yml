@@ -1,0 +1,115 @@
+name: Update Trials Map
+
+on:
+  schedule:
+    - cron: '0 6 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  scrape-and-deploy:
+    runs-on: ubuntu-latest
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+      
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      
+      - name: Setup R
+        uses: r-lib/actions/setup-r@v2
+        with:
+          r-version: '4.3.0'
+          use-public-rspm: true    
+      
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libcurl4-openssl-dev libssl-dev libxml2-dev
+
+      - name: Setup Chrome                # <-- ADD (whole step)
+        id: setup-chrome
+        uses: browser-actions/setup-chrome@v2
+        with:
+          install-dependencies: true
+
+      - name: Point chromote at Chrome    # <-- ADD (whole step)
+        run: echo "CHROMOTE_CHROME=${{ steps.setup-chrome.outputs.chrome-path }}" >> "$GITHUB_ENV"
+      
+      - name: Install R packages
+        run: |
+          Rscript -e 'install.packages(c("rvest", "dplyr", "tidyr", "tidygeocoder", "jsonlite", "httr", "chromote"))'
+
+      - name: Verify chromote can drive Chrome   # <-- ADD (optional)
+        shell: Rscript {0}
+        run: |
+          chromote::set_chrome_args(c(chromote::get_chrome_args(),
+                                      "--no-sandbox", "--disable-dev-shm-usage"))
+          b <- chromote::ChromoteSession$new()
+          b$Page$navigate("https://example.com", wait_ = TRUE)
+          cat("chromote OK:", b$Runtime$evaluate("document.title")$result$value, "\n")
+
+
+      - name: Run scraping script
+        run: |
+          Rscript Trialmaps_Interactive.R
+      
+      - name: Verify CSV was created
+        run: |
+          echo "Checking for CSV file..."
+          if [ -f "trials_for_google_sheets.csv" ]; then
+            echo "✓ CSV file exists"
+            wc -l trials_for_google_sheets.csv
+            head -2 trials_for_google_sheets.csv
+          else
+            echo "✗ CSV file not found!"
+            ls -la
+            exit 1
+          fi
+      
+      - name: Convert CSV to JavaScript
+        run: |
+          echo "Creating docs directory..."
+          mkdir -p docs
+          
+          echo "Converting CSV to JSON..."
+          Rscript -e '
+            library(jsonlite)
+            
+            cat("Reading CSV...\n")
+            df <- read.csv("trials_for_google_sheets.csv", stringsAsFactors = FALSE)
+            cat("Found", nrow(df), "rows\n")
+            
+            cat("Converting to JSON...\n")
+            json_data <- toJSON(df, pretty = TRUE)
+            
+            cat("Writing to data.js...\n")
+            update_date <- trimws(gsub("\\s+", " ", format(Sys.time(), "%B %e, %Y", tz = "America/New_York")))
+            write(paste0("const DATA_UPDATED = \"", update_date, "\";"), file = "docs/data.js")
+            write("const TRIALS_DATA = ", file = "docs/data.js", append=TRUE)
+            write(json_data, file = "docs/data.js", append = TRUE)
+            write(";", file = "docs/data.js", append = TRUE)
+            
+            cat("✓ data.js created successfully\n")
+          '
+          
+          echo "Verifying data.js..."
+          if [ -f "docs/data.js" ]; then
+            echo "✓ data.js exists"
+            ls -lh docs/data.js
+            echo "First 5 lines:"
+            head -5 docs/data.js
+          else
+            echo "✗ data.js was not created!"
+            exit 1
+          fi
+      
+      - name: Commit and push changes
+        run: |
+          git config --global user.name 'GitHub Actions Bot'
+          git config --global user.email 'actions@github.com'
+          git add docs/data.js
+          git diff --staged --quiet || git commit -m "Auto-update trials data"
+          git push
