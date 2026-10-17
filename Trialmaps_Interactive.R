@@ -677,12 +677,22 @@ cat("📦 Step 4: Grouping trials by date and location...\n")
 
 JITTER_AMOUNT <- 0.05  # About 3-5 miles, visible at state level
 
-trials_grouped <- trials_with_coords %>%
+# One row per date + location (+ club, for AKC). Every event link is kept as
+# a "YYYY-MM-DD URL" item in EventLinks, so nothing is lost when rows merge;
+# EventLink keeps the first one for anything that expects a single link.
+trials_days <- trials_with_coords %>%
   filter(!is.na(Latitude), !is.na(Longitude)) %>%
-  group_by(Date, Location, Org) %>%
+  mutate(
+    LinkItem = ifelse(is.na(EventLink), NA_character_,
+                      paste(format(Date), EventLink)),
+    # Different AKC clubs can hold trials in the same town on the same day
+    HostKey  = ifelse(Org == "AKC", Host, "")
+  ) %>%
+  group_by(Date, Location, Org, HostKey) %>%
   summarize(
-    Host      = first(Host),
-    EventLink = first(EventLink),
+    Host       = first(Host),
+    EventLink  = first(EventLink),
+    EventLinks = paste(unique(na.omit(LinkItem)), collapse = " ; "),
     # Combine all event types across rows for this date+location, de-duplicated
     # (e.g. "NW3, ELT" + "ELT" -> "NW3, ELT"). unique() preserves first-seen
     # order, so level ordering is retained.
@@ -693,13 +703,41 @@ trials_grouped <- trials_with_coords %>%
     Latitude_Base  = first(Latitude),
     Longitude_Base = first(Longitude),
     .groups = 'drop'
+  )
+
+# AKC lists each day of a multi-day trial (and each trial within a day) as a
+# separate event. Merge runs of consecutive days by the same club at the same
+# location into one map entry spanning Date..EndDate, keeping every link.
+# NACSW rows stay one entry per day.
+trials_grouped <- trials_days %>%
+  arrange(Org, Location, HostKey, Date) %>%
+  group_by(Org, Location, HostKey) %>%
+  mutate(Run = if (first(Org) == "AKC") cumsum(c(TRUE, diff(Date) > 1))
+               else row_number()) %>%
+  group_by(Org, Location, HostKey, Run) %>%
+  summarize(
+    EndDate    = max(Date),   # before Date, which summarize() then overwrites
+    Date       = min(Date),
+    Host       = first(Host),
+    EventLink  = first(EventLink),
+    EventLinks = paste(EventLinks[EventLinks != ""], collapse = " ; "),
+    TrialTypes = {
+      t <- trimws(unlist(strsplit(TrialTypes, ",\\s*")))
+      paste(unique(t[t != ""]), collapse = ", ")
+    },
+    Latitude_Base  = first(Latitude_Base),
+    Longitude_Base = first(Longitude_Base),
+    .groups = 'drop'
   ) %>%
   mutate(
-    EventCount = lengths(strsplit(TrialTypes, ",\\s*")),
+    # AKC: number of AKC events (event numbers) merged; NACSW: trial types
+    EventCount = ifelse(Org == "AKC",
+                        pmax(1L, lengths(strsplit(EventLinks, " ; "))),
+                        lengths(strsplit(TrialTypes, ",\\s*"))),
     Latitude   = Latitude_Base  + runif(n(), -JITTER_AMOUNT, JITTER_AMOUNT),
     Longitude  = Longitude_Base + runif(n(), -JITTER_AMOUNT, JITTER_AMOUNT)
   ) %>%
-  select(-Latitude_Base, -Longitude_Base)
+  select(-Latitude_Base, -Longitude_Base, -Run, -HostKey)
 
 cat("✓ Grouped into", nrow(trials_grouped), "unique trials (one pin per trial)\n")
 cat("  • Total event types:", sum(trials_grouped$EventCount), "\n\n")
@@ -711,7 +749,8 @@ cat("  • Total event types:", sum(trials_grouped$EventCount), "\n\n")
 cat("💾 Step 5: Creating final dataset...\n")
 
 trials_final <- trials_grouped %>%
-  select(Date, Location, Org, Host, EventLink, TrialTypes, EventCount, Latitude, Longitude) %>%
+  select(Date, EndDate, Location, Org, Host, EventLink, EventLinks, TrialTypes,
+         EventCount, Latitude, Longitude) %>%
   arrange(Date, Location)
 
 date_range <- range(trials_final$Date)

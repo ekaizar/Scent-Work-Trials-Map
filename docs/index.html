@@ -589,6 +589,27 @@
             return `${y}-${mo}-${da}`;
         }
 
+        // "Sat, Oct 18, 2024" or, for a multi-day trial, "Sat, Oct 18 – Mon, Oct 20, 2024"
+        function formatDateRange(start, end) {
+            if (!end || String(end) === String(start) || String(end).toUpperCase() === 'NA') {
+                return formatDate(start);
+            }
+            const s = parseLocalDate(start), e = parseLocalDate(end);
+            const opts = { weekday: 'short', month: 'short', day: 'numeric' };
+            if (s.getFullYear() !== e.getFullYear()) opts.year = 'numeric';
+            return `${s.toLocaleDateString('en-US', opts)} – ${formatDate(end)}`;
+        }
+
+        // EventLinks is "YYYY-MM-DD URL ; YYYY-MM-DD URL ; ...", one item per event.
+        function parseEventLinks(trial) {
+            if (!trial.EventLinks || String(trial.EventLinks).toUpperCase() === 'NA') return [];
+            return String(trial.EventLinks).split(' ; ').map(item => {
+                const [date, url] = item.trim().split(' ');
+                const num = (url || '').match(/event_number=(\d+)/);
+                return { date, url, label: num ? `#${num[1]}` : '' };
+            }).filter(l => l.url && /^https?:\/\//.test(l.url));
+        }
+
         function formatDate(dateString) {
             const date = parseLocalDate(dateString);
             return date.toLocaleDateString('en-US', { 
@@ -751,8 +772,10 @@
                 .map(cb => cb.value);
             
             let filteredEvents = allEvents.filter(trial => {
-                const trialDate = parseLocalDate(trial.Date);
-                const dateMatch = trialDate >= dateFrom && trialDate <= dateTo;
+                // Multi-day trials match if any day falls inside the range
+                const trialStart = parseLocalDate(trial.Date);
+                const trialEnd = trial.EndDate ? parseLocalDate(trial.EndDate) : trialStart;
+                const dateMatch = trialStart <= dateTo && trialEnd >= dateFrom;
                 const typeMatch = trial.TrialTypesArray.some(type => checkedTypes.includes(type));
                 return dateMatch && typeMatch;
             });
@@ -868,7 +891,16 @@
                             String(trial.EventLink).trim() && 
                             String(trial.EventLink).toUpperCase() !== 'NA';
             
-            const actionBlock = hasLink 
+            const links = parseEventLinks(trial);
+            const linkDay = { weekday: 'short', month: 'short', day: 'numeric' };
+            const actionBlock = links.length > 1
+                ? `<div class="popup-info" style="margin-top: 10px;">
+                       <strong>Event Details (${links.length} events):</strong>
+                       ${links.map(l => `<div class="popup-link" style="margin-top: 4px;">
+                           <a href="${l.url}" target="_blank" rel="noopener">${parseLocalDate(l.date).toLocaleDateString('en-US', linkDay)} ${l.label} →</a>
+                       </div>`).join('')}
+                   </div>`
+                : hasLink 
                 ? `<div class="popup-link">
                        <a href="${trial.EventLink}" target="_blank" rel="noopener">View Event Details →</a>
                    </div>`
@@ -877,7 +909,7 @@
             return `
                 <div class="popup-title">${trial.Location}</div>
                 <div class="popup-info">
-                    <span class="popup-label">Date:</span> ${formatDate(trial.Date)}
+                    <span class="popup-label">Date:</span> ${formatDateRange(trial.Date, trial.EndDate)}
                 </div>
                 <div class="popup-info">
                     <span class="popup-label">Host:</span> ${trial.Host}
