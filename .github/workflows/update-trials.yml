@@ -55,6 +55,18 @@ jobs:
         run: |
           Rscript Trialmaps_Interactive.R
       
+      # Save upcoming NACSW host pages (and the premiums they link to) in the
+      # Wayback Machine. Needs repository secrets IA_ACCESS_KEY / IA_SECRET_KEY;
+      # a failure here never blocks the map update.
+      - name: Archive NACSW host pages
+        continue-on-error: true
+        timeout-minutes: 90
+        env:
+          IA_ACCESS_KEY: ${{ secrets.IA_ACCESS_KEY }}
+          IA_SECRET_KEY: ${{ secrets.IA_SECRET_KEY }}
+        run: |
+          Rscript archive_host_pages.R
+
       - name: Verify CSV was created
         run: |
           echo "Checking for CSV file..."
@@ -110,5 +122,6 @@ jobs:
           git config --global user.name 'GitHub Actions Bot'
           git config --global user.email 'actions@github.com'
           git add docs/data.js
+          if [ -f archive_log.csv ]; then git add archive_log.csv; fi
           git diff --staged --quiet || git commit -m "Auto-update trials data"
           git push

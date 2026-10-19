@@ -748,10 +748,30 @@ cat("  • Total event types:", sum(trials_grouped$EventCount), "\n\n")
 
 cat("💾 Step 5: Creating final dataset...\n")
 
+# Wayback Machine copies of NACSW host pages, captured while each trial was
+# upcoming by archive_host_pages.R (which runs after this script, so a new
+# capture shows up on the following run).
+archive_file <- "archive_log.csv"
+archive_links <- if (file.exists(archive_file)) {
+  read.csv(archive_file, stringsAsFactors = FALSE, colClasses = "character") %>%
+    filter(snapshot_timestamp != "") %>%
+    transmute(Date = as.Date(Date), Location, Org = "NACSW",
+              ArchiveLink = paste0("https://web.archive.org/web/",
+                                   snapshot_timestamp, "/", url)) %>%
+    distinct(Date, Location, Org, .keep_all = TRUE)
+} else {
+  data.frame(Date = as.Date(character()), Location = character(),
+             Org = character(), ArchiveLink = character())
+}
+
+# Joined by trial, not URL: completed NACSW trials no longer carry a link.
 trials_final <- trials_grouped %>%
-  select(Date, EndDate, Location, Org, Host, EventLink, EventLinks, TrialTypes,
-         EventCount, Latitude, Longitude) %>%
+  left_join(archive_links, by = c("Date", "Location", "Org")) %>%
+  select(Date, EndDate, Location, Org, Host, EventLink, EventLinks, ArchiveLink,
+         TrialTypes, EventCount, Latitude, Longitude) %>%
   arrange(Date, Location)
+
+cat("  • Trials with an archived host page:", sum(!is.na(trials_final$ArchiveLink)), "\n")
 
 date_range <- range(trials_final$Date)
 unique_locations <- length(unique(trials_final$Location))

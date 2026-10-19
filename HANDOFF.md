@@ -27,6 +27,8 @@ The map is a static page hosted on GitHub Pages. A weekly GitHub Actions job ref
 | `docs/index.html` | The map page (Leaflet 1.9.4 from unpkg; all JS is inline) |
 | `docs/data.js` | Generated data: `const DATA_UPDATED = "..."; const TRIALS_DATA = [...];` **Never hand-edit**: each run overwrites it |
 | `docs/radius_map.html` | Older "radius search" page. **Not updated for AKC** (still NACSW branding and fields) |
+| `archive_host_pages.R` | Saves upcoming NACSW host pages (and the premiums they link to) in the Wayback Machine; see "Wayback archiving" |
+| `archive_log.csv` | One row per NACSW trial (Date + Location): host page URL, latest pre-trial Wayback snapshot, last request status. Committed by the workflow |
 | `geocode_cache.csv` | Cache of town → lat/long from OpenStreetMap (Nominatim) lookups, to avoid re-geocoding. **The workflow doesn't commit it** (see Known issues) |
 | `ARCHIVE/`, `docs/ARCHIVE/` | Old script and page versions, not used |
 | `README.md` | Short public description |
@@ -51,7 +53,7 @@ GitHub Pages serves the `/docs` folder of `main`.
    - **4a:** one row per date + location + org (and + club, for AKC). Every event link is kept in `EventLinks`.
    - **4b:** consecutive-day AKC events by the same club at the same location are merged into one entry spanning `Date`…`EndDate`. NACSW stays one entry per day.
    - **4c:** small random jitter (±0.05°) so overlapping pins separate.
-6. **Steps 5–6.** Write `trials_for_google_sheets.csv`. The workflow converts it to `docs/data.js`.
+6. **Steps 5–6.** Join `archive_log.csv` by Date + Location to add `ArchiveLink` to NACSW trials, then write `trials_for_google_sheets.csv`. The workflow converts it to `docs/data.js`.
 
 ### Config knobs (top of the R script)
 
@@ -75,6 +77,7 @@ GitHub Pages serves the `/docs` folder of `main`.
 | `Host` | Host or club name |
 | `EventLink` | First event link (NACSW event website, or the AKC event page) |
 | `EventLinks` | `"YYYY-MM-DD URL ; YYYY-MM-DD URL ; ..."`: every event link in the entry |
+| `ArchiveLink` | NACSW only: Wayback Machine snapshot of the host page, taken before the trial (empty if none yet) |
 | `TrialTypes` | Comma-separated: NACSW levels (NW1, NW2, NW3, ELT, L1C…) or `AKC Scent Work` |
 | `EventCount` | NACSW: number of trial types. AKC: number of AKC events merged |
 | `Latitude`, `Longitude` | Jittered coordinates |
@@ -105,6 +108,29 @@ Latest run (Oct 16, 2026): 1,744 AKC entries (from about 3,300 AKC events) plus 
   3. Paste it into `AKC_BODY_JSON`.
 - The old ColdFusion calendar (`apps.akc.org/apps/event_calendar/...`) was rejected as a source: it's hard to parse and has no coordinates.
 - Reference implementation that helped decode the API: https://github.com/finnishspitzclub/fsca-events (`akcal.py`, `SCHEMA.md`).
+
+## Wayback archiving (`archive_host_pages.R`)
+
+Hosts take their trial page and premium down after the trial, and the NACSW calendar drops the link at the same time. So the workflow saves each upcoming NACSW host page while it's still live.
+
+- **When:** a workflow step after the main script, with `continue-on-error` and a 90-minute timeout. A failure never blocks the map update.
+- **API:** Internet Archive Save Page Now (SPN2).
+  - `POST https://web.archive.org/save` with `capture_outlinks=1` (also saves linked pages and PDFs, i.e. the premium) and `if_not_archived_within=7d`.
+  - Then `GET /save/status/<job_id>` for the result.
+  - Auth header: `Authorization: LOW <access>:<secret>`.
+- **Keys:** repository secrets `IA_ACCESS_KEY` and `IA_SECRET_KEY` (archive.org account, https://archive.org/account/s3.php). If they're missing, the step skips. **Never put the keys in the code or in chat.**
+- **What gets captured:**
+  - Upcoming NACSW trials with an `EventLink`, soonest first.
+  - Pages with no capture yet, or whose last capture is more than 30 days old.
+  - One more capture in the 14 days before the trial, if the last one was earlier.
+  - At most 150 requests per run, 12 s apart. A failed URL is retried the following week.
+- **Log:** `archive_log.csv` is keyed by trial (Date + Location), not by URL, because past NACSW trials have no link left to match on. Rows of past trials are never updated, so they keep their last pre-trial capture.
+- **Timing:** a new capture appears on the map on the *next* run, because the main script reads the log before the archive step updates it.
+- **Map:** popups show "🗄️ Archived host page & premium (Wayback Machine) →" when `ArchiveLink` is set.
+- **Limits:**
+  - Google Drive and Dropbox premiums, JavaScript-heavy pages and sites that block the Archive may not capture properly.
+  - Trials that were already over before this started can't be recovered this way.
+- **AKC isn't archived yet.** A possible next step is to save AKC premium documents too: the API's `documents[]` has `PRMLST` entries, but the download URL hasn't been worked out.
 
 ## Map page (`docs/index.html`) behavior
 

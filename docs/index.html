@@ -910,6 +910,16 @@
                    </div>`
                 : `<div class="popup-no-link">No Details Available</div>`;
             
+            // Wayback Machine copy of the host page (and premium) saved before the
+            // trial; the original page usually disappears once the trial is over.
+            const hasArchive = trial.ArchiveLink &&
+                               String(trial.ArchiveLink).toUpperCase() !== 'NA';
+            const archiveBlock = hasArchive
+                ? `<div class="popup-link" style="margin-top: 4px;">
+                       <a href="${trial.ArchiveLink}" target="_blank" rel="noopener">🗄️ Archived host page &amp; premium (Wayback Machine) →</a>
+                   </div>`
+                : '';
+
             return `
                 <div class="popup-title">${trial.Location}</div>
                 <div class="popup-info">
@@ -926,7 +936,8 @@
                         ${eventTypesList}
                     </div>
                 </div>
-                ${actionBlock}
+                ${(hasArchive && !hasLink && links.length <= 1) ? '' : actionBlock}
+                ${archiveBlock}
             `;
         }
         
