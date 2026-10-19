@@ -665,7 +665,11 @@
 
                 let updatedText = '';
                 if (typeof DATA_UPDATED !== 'undefined' && DATA_UPDATED) {
-                    updatedText = `Last updated: ${DATA_UPDATED} | `;
+                    // If the latest AKC fetch failed, the AKC trials are from an earlier run
+                    const akcNote = (typeof AKC_UPDATED !== 'undefined' && AKC_UPDATED &&
+                                     AKC_UPDATED !== DATA_UPDATED)
+                        ? ` (AKC data from ${AKC_UPDATED})` : '';
+                    updatedText = `Last updated: ${DATA_UPDATED}${akcNote} | `;
                 }
                 document.getElementById('lastUpdate').textContent =
                     `${updatedText}Latest trial: ${formatDate(latestDate)}`;

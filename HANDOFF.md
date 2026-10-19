@@ -47,7 +47,8 @@ GitHub Pages serves the `/docs` folder of `main`.
    - Only trials from the last `YEARS_BACK` (2) years onward are kept.
 3. **Step 2b – AKC Scent Work.** POSTs to the undocumented AKC Event Search API (details below), one request per `AKC_WINDOW_DAYS` (90) window, from 2 years back to `AKC_YEARS_AHEAD` (2) years ahead.
    - Each AKC event becomes one row, with its link to `https://www.apps.akc.org/apps/events/search/index_results.cfm?action=plan&event_number=<n>`.
-   - **Any AKC failure is logged and skipped**, so NACSW still updates.
+   - **Any AKC failure is logged and skipped**, so NACSW still updates. The AKC trials already on the map are **carried over** from the current `docs/data.js` (in Step 5) instead of disappearing.
+   - In that case the script writes `akc_updated.txt` with the date of the last successful AKC fetch. The workflow adds `const AKC_UPDATED = "...";` to `data.js`, and the header shows "Last updated: <date> (AKC data from <older date>)". Repeated failures keep the original date.
 4. **Step 3 – Geocode.** NACSW locations ("City, ST, USA") go through `tidygeocoder` (OpenStreetMap) and the cache. AKC rows use AKC's own venue latitude/longitude; only AKC rows missing coordinates get geocoded.
 5. **Step 4 – Group.**
    - **4a:** one row per date + location + org (and + club, for AKC). Every event link is kept in `EventLinks`.

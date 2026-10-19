@@ -523,6 +523,10 @@ akc_record_to_row <- function(e) {
   )
 }
 
+# Set when this run's AKC fetch fails; Step 5 then carries over the AKC
+# trials already on the map (see carry_over_akc) instead of dropping them.
+akc_failed <- FALSE
+
 if (INCLUDE_AKC) {
   cat("🐕 Step 2b: Fetching AKC Scent Work trials...\n")
 
@@ -558,6 +562,7 @@ if (INCLUDE_AKC) {
       select(-Status, -EventNo)
   }, error = function(e) {
     cat("  ⚠️  Skipping AKC this run:", conditionMessage(e), "\n")
+    akc_failed <<- TRUE
     NULL
   })
 
@@ -772,6 +777,48 @@ trials_final <- trials_grouped %>%
   arrange(Date, Location)
 
 cat("  • Trials with an archived host page:", sum(!is.na(trials_final$ArchiveLink)), "\n")
+
+# AKC fetch failed: keep the AKC trials from the map's current data.js rather
+# than publishing a map with no AKC trials, and remember how old they are.
+# akc_updated.txt (written only then) tells the workflow which date to show for
+# the AKC data; when AKC was fetched fine, the header just shows DATA_UPDATED.
+akc_date_file <- "akc_updated.txt"
+if (file.exists(akc_date_file)) file.remove(akc_date_file)
+
+carry_over_akc <- function(old_file = "docs/data.js") {
+  if (!file.exists(old_file)) return(NULL)
+  txt <- paste(readLines(old_file, warn = FALSE, encoding = "UTF-8"), collapse = "\n")
+  json <- sub("(?s)^.*?const TRIALS_DATA\\s*=\\s*", "", txt, perl = TRUE)
+  json <- sub("(?s);\\s*$", "", json, perl = TRUE)
+  old <- tryCatch(jsonlite::fromJSON(json), error = function(e) NULL)
+  if (is.null(old) || !"Org" %in% names(old)) return(NULL)
+  # Date of the last successful AKC fetch: AKC_UPDATED if the old file has it
+  # (it was itself a carry-over), otherwise that run's DATA_UPDATED.
+  grab <- function(name) {
+    m <- regmatches(txt, regexec(paste0("const ", name, ' = "([^"]*)"'), txt))[[1]]
+    if (length(m) == 2) m[2] else NA_character_
+  }
+  as_of <- grab("AKC_UPDATED")
+  if (is.na(as_of)) as_of <- grab("DATA_UPDATED")
+  if (!"EndDate" %in% names(old)) old$EndDate <- old$Date
+  rows <- old %>%
+    filter(Org == "AKC") %>%
+    mutate(Date = as.Date(Date), EndDate = as.Date(EndDate)) %>%
+    filter(EndDate >= earliest_date)
+  list(rows = rows, as_of = as_of)
+}
+
+if (INCLUDE_AKC && akc_failed) {
+  prev <- carry_over_akc()
+  if (!is.null(prev) && nrow(prev$rows) > 0) {
+    trials_final <- bind_rows(trials_final, prev$rows) %>% arrange(Date, Location)
+    writeLines(prev$as_of, akc_date_file)
+    cat("  • AKC fetch failed: kept", nrow(prev$rows),
+        paste0("AKC trials from the previous data (as of ", prev$as_of, ")\n"))
+  } else {
+    cat("  ⚠️  AKC fetch failed and no previous AKC data to keep\n")
+  }
+}
 
 date_range <- range(trials_final$Date)
 unique_locations <- length(unique(trials_final$Location))

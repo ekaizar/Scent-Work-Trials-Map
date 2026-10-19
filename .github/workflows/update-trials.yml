@@ -105,6 +105,12 @@ jobs:
             cat("Writing to data.js...\n")
             update_date <- trimws(gsub("\\s+", " ", format(Sys.time(), "%B %e, %Y", tz = "America/New_York")))
             write(paste0("const DATA_UPDATED = \"", update_date, "\";"), file = "docs/data.js")
+            # Date of the AKC data (older than DATA_UPDATED when this run kept the
+            # previous AKC trials because the AKC fetch failed)
+            if (file.exists("akc_updated.txt")) {
+              akc_date <- readLines("akc_updated.txt", n = 1)
+              write(paste0("const AKC_UPDATED = \"", akc_date, "\";"), file = "docs/data.js", append = TRUE)
+            }
             write("const TRIALS_DATA = ", file = "docs/data.js", append=TRUE)
             write(json_data, file = "docs/data.js", append = TRUE)
             write(";", file = "docs/data.js", append = TRUE)
