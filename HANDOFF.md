@@ -131,7 +131,7 @@ Hosts take their trial page and premium down after the trial, and the NACSW cale
   - Every request sends a descriptive User-Agent (`ScentWorkTrialsMap-Archiver/1.0 (+repo URL; ...)`) and is authenticated.
   - Requests go one at a time with delays.
   - On HTTP 429/503 the script waits as long as `Retry-After` says (up to 10 min) and retries twice. If still throttled, it stops for this run and logs the rest for next week.
-- **Overlapping runs:** the workflow has a `concurrency` group, so a manual run and the scheduled run queue instead of racing. The commit step also does `git pull --rebase` before pushing. (An overlap on Oct 19, 2026 made the second run's push fail.)
+- **Overlapping runs:** the workflow has a `concurrency` group, so a manual run and the scheduled run queue instead of racing. The commit step also does `git pull --rebase --autostash` before pushing (without `--autostash` it failed with exit code 128 because of the run's uncommitted files). (An overlap on Oct 19, 2026 made the second run's push fail.)
 - **Log:** `archive_log.csv` is keyed by trial (Date + Location), not by URL, because past NACSW trials have no link left to match on. Rows of past trials are never updated, so they keep their last pre-trial capture.
 - **Timing:** a new capture appears on the map on the *next* run, because the main script reads the log before the archive step updates it.
 - **Map:** popups show "🗄️ Archived host page & premium (Wayback Machine) →" when `ArchiveLink` is set.
@@ -168,12 +168,11 @@ Hosts take their trial page and premium down after the trial, and the NACSW cale
 
 ## Known issues and TODOs
 
-1. **Geocode cache isn't persisted.** The workflow commits only `docs/data.js`, so new NACSW towns are re-geocoded every run. Fix: also `git add geocode_cache.csv` in the commit step.
-2. **`docs/radius_map.html` is stale.** It has no AKC support and no `EndDate`/`EventLinks` handling. Update it or remove it.
-3. **AKC trial classes aren't broken out.** Every AKC entry is labelled "AKC Scent Work". Splitting by element and level (Containers, Interior, Exterior, Buried, Handler Discrimination × Novice…Master/Detective) needs inspecting an event's `items[]` in the API response.
-4. **AKC same-town collisions:** two different AKC clubs in the same town on the same days stay separate entries, by design (grouped by club). NACSW entries in the same town and on the same day as AKC ones are also kept separate (grouped by `Org`).
-5. **Link on the old NACSW site:** a header link to this map was prepared ("New: NACSW + AKC Scent Work map →", `#sisterLink`, in `docs/index.html` and `docs/radius_map.html` of NACSW-Trials-Map). The owner planned to add it by hand in GitHub's web editor. Check whether it's live.
-6. **Terms of use:** the AKC API is undocumented, and no AKC terms covering automated access were found. Keep the weekly cadence and the polite 2 s delay between requests.
+1. **`docs/radius_map.html` is stale.** It has no AKC support and no `EndDate`/`EventLinks` handling. Update it or remove it.
+2. **AKC trial classes aren't broken out.** Every AKC entry is labelled "AKC Scent Work". Splitting by element and level (Containers, Interior, Exterior, Buried, Handler Discrimination × Novice…Master/Detective) needs inspecting an event's `items[]` in the API response.
+3. **AKC same-town collisions:** two different AKC clubs in the same town on the same days stay separate entries, by design (grouped by club). NACSW entries in the same town and on the same day as AKC ones are also kept separate (grouped by `Org`).
+4. **Link on the old NACSW site:** a header link to this map was prepared ("New: NACSW + AKC Scent Work map →", `#sisterLink`, in `docs/index.html` and `docs/radius_map.html` of NACSW-Trials-Map). The owner planned to add it by hand in GitHub's web editor. Check whether it's live.
+5. **Terms of use:** the AKC API is undocumented, and no AKC terms covering automated access were found. Keep the weekly cadence and the polite 2 s delay between requests.
 
 ## How to verify a change
 

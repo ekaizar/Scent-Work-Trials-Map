@@ -127,9 +127,10 @@ jobs:
         run: |
           git config --global user.name 'GitHub Actions Bot'
           git config --global user.email 'actions@github.com'
-          git add docs/data.js
+          git add docs/data.js geocode_cache.csv
           if [ -f archive_log.csv ]; then git add archive_log.csv; fi
           git diff --staged --quiet || git commit -m "Auto-update trials data"
-          # Pick up anything pushed while this run was working (e.g. code changes)
-          git pull --rebase origin main
+          # Pick up anything pushed while this run was working (e.g. code changes).
+          # --autostash: leftover run files (e.g. the CSV) must not block the rebase.
+          git pull --rebase --autostash origin main
           git push
