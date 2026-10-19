@@ -29,7 +29,7 @@ The map is a static page hosted on GitHub Pages. A weekly GitHub Actions job ref
 | `docs/radius_map.html` | Older "radius search" page. **Not updated for AKC** (still NACSW branding and fields) |
 | `archive_host_pages.R` | Saves upcoming NACSW host pages (and the premiums they link to) in the Wayback Machine; see "Wayback archiving" |
 | `archive_log.csv` | One row per NACSW trial (Date + Location): host page URL, latest pre-trial Wayback snapshot, last request status. Committed by the workflow |
-| `geocode_cache.csv` | Cache of town → lat/long from OpenStreetMap (Nominatim) lookups, to avoid re-geocoding. **The workflow doesn't commit it** (see Known issues) |
+| `geocode_cache.csv` | Cache of town → lat/long from OpenStreetMap (Nominatim) lookups, to avoid re-geocoding. Committed by the workflow |
 | `ARCHIVE/`, `docs/ARCHIVE/` | Old script and page versions, not used |
 | `README.md` | Short public description |
 
