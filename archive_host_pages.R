@@ -40,6 +40,49 @@ auth_headers <- httr::add_headers(
   Authorization = paste0("LOW ", access, ":", secret)
 )
 
+# Per https://archive.org/developers/bots.html: identify the bot with a
+# descriptive User-Agent, authenticate, go one request at a time with delays,
+# and honor 429 Too Many Requests / Retry-After.
+USER_AGENT <- paste0("ScentWorkTrialsMap-Archiver/1.0 ",
+                     "(+https://github.com/ekaizar/Scent-Work-Trials-Map; ",
+                     "weekly GitHub Actions job saving dog-trial host pages)")
+MAX_RETRY_WAIT <- 600   # never sleep longer than this on one Retry-After
+
+# Seconds to wait from a Retry-After header (delta-seconds or HTTP date).
+retry_after_seconds <- function(resp, default = 60) {
+  h <- httr::headers(resp)[["retry-after"]]
+  if (is.null(h)) return(default)
+  secs <- suppressWarnings(as.numeric(h))
+  if (is.na(secs)) {
+    when <- suppressWarnings(httr::parse_http_date(h))
+    secs <- if (is.na(when)) default else as.numeric(difftime(when, Sys.time(), units = "secs"))
+  }
+  max(1, secs)
+}
+
+# One request to the Archive. On 429/503 it waits as told by Retry-After and
+# retries (twice); if still throttled it returns attr "throttled" = TRUE so the
+# caller stops for this run. Transport errors come back as an error object.
+ia_request <- function(method, url, ...) {
+  for (attempt in 1:3) {
+    resp <- tryCatch(
+      httr::VERB(method, url, auth_headers, httr::user_agent(USER_AGENT),
+                 httr::timeout(60), ...),
+      error = function(e) e
+    )
+    if (inherits(resp, "error")) return(resp)
+    code <- httr::status_code(resp)
+    if (!code %in% c(429, 503)) return(resp)
+    wait <- retry_after_seconds(resp)
+    if (attempt == 3 || wait > MAX_RETRY_WAIT) break
+    cat(sprintf("    HTTP %d from the Archive; waiting %d s (Retry-After)\n",
+                code, round(wait)))
+    Sys.sleep(wait)
+  }
+  attr(resp, "throttled") <- TRUE
+  resp
+}
+
 today <- Sys.Date()
 
 # --- Archive log -------------------------------------------------------------
@@ -100,19 +143,18 @@ cat("  • Upcoming NACSW host pages needing a capture:", nrow(candidates), "\n\
 
 # --- Submit capture requests -------------------------------------------------
 submit_capture <- function(url) {
-  resp <- tryCatch(
-    httr::POST(
-      "https://web.archive.org/save",
-      auth_headers,
-      body = list(url = url, capture_outlinks = "1",
-                  if_not_archived_within = "7d"),
-      encode = "form",
-      httr::timeout(60)
-    ),
-    error = function(e) e
+  resp <- ia_request(
+    "POST", "https://web.archive.org/save",
+    body = list(url = url, capture_outlinks = "1",
+                if_not_archived_within = "7d"),
+    encode = "form"
   )
   if (inherits(resp, "error")) {
     return(list(job_id = NA, message = conditionMessage(resp)))
+  }
+  if (isTRUE(attr(resp, "throttled"))) {
+    return(list(job_id = NA, throttled = TRUE,
+                message = sprintf("HTTP %d (rate-limited)", httr::status_code(resp))))
   }
   body <- tryCatch(httr::content(resp, as = "parsed", type = "application/json"),
                    error = function(e) NULL)
@@ -123,12 +165,9 @@ submit_capture <- function(url) {
 }
 
 check_status <- function(job_id) {
-  resp <- tryCatch(
-    httr::GET(paste0("https://web.archive.org/save/status/", job_id),
-              auth_headers, httr::timeout(60)),
-    error = function(e) NULL
-  )
-  if (is.null(resp)) return(list(status = "pending"))
+  resp <- ia_request("GET", paste0("https://web.archive.org/save/status/", job_id))
+  if (inherits(resp, "error")) return(list(status = "pending"))
+  if (isTRUE(attr(resp, "throttled"))) return(list(status = "pending", throttled = TRUE))
   tryCatch(httr::content(resp, as = "parsed", type = "application/json"),
            error = function(e) list(status = "pending"))
 }
@@ -140,7 +179,8 @@ for (i in seq_len(nrow(candidates))) {
   cat(sprintf("  [%d/%d] %s -> %s\n", i, nrow(candidates), url,
               if (is.na(r$job_id)) paste("not submitted:", r$message) else "submitted"))
   jobs[[url]] <- r
-  if (grepl("too many|rate|limit", r$message, ignore.case = TRUE)) {
+  if (isTRUE(r$throttled) ||
+      grepl("too many|rate|limit", r$message, ignore.case = TRUE)) {
     cat("  ⚠️  Rate-limited by the Archive; stopping submissions for this run.\n")
     break
   }
@@ -149,6 +189,7 @@ for (i in seq_len(nrow(candidates))) {
 
 # --- Collect results ---------------------------------------------------------
 results <- list()
+status_throttled <- FALSE
 if (length(jobs) > 0) {
   cat("\n  • Waiting", STATUS_WAIT, "s for captures to finish...\n")
   Sys.sleep(STATUS_WAIT)
@@ -159,12 +200,16 @@ if (length(jobs) > 0) {
       results[[url]] <- list(status = "error", message = j$message, timestamp = NA)
       next
     }
-    st <- check_status(j$job_id)
+    # Once the Archive throttles status checks, stop asking this run; the
+    # remaining jobs are logged as pending and retried next week.
+    st <- if (status_throttled) list(status = "pending") else check_status(j$job_id)
+    if (isTRUE(st$throttled)) status_throttled <- TRUE
     # Give slow captures (many outlinks) a few more chances
     tries <- 0
-    while (identical(st$status, "pending") && tries < 6) {
+    while (identical(st$status, "pending") && !status_throttled && tries < 6) {
       Sys.sleep(20); tries <- tries + 1
       st <- check_status(j$job_id)
+      if (isTRUE(st$throttled)) status_throttled <- TRUE
     }
     results[[url]] <- list(
       status    = if (is.null(st$status)) "pending" else st$status,
