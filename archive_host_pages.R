@@ -270,8 +270,13 @@ for (i in seq_len(nrow(candidates))) {
     log_request(url, "pending", job_id = r$job_id)
     submitted <- c(submitted, r$job_id)
   }
+  # Stop only on account-wide throttling. Per-URL refusals (e.g. "This URL has
+  # been already captured 5 times today, which is a daily limit...") just skip
+  # that page.
   if (isTRUE(r$throttled) ||
-      grepl("too many|rate|limit", r$message, ignore.case = TRUE)) {
+      (grepl("too many|rate.?limit|limit of active|concurrent", r$message,
+             ignore.case = TRUE) &&
+       !grepl("this url|captured .* times", r$message, ignore.case = TRUE))) {
     cat("  ⚠️  Rate-limited by the Archive; stopping submissions for this run.\n")
     break
   }
