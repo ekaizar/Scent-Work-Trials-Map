@@ -123,11 +123,15 @@ Hosts take their trial page and premium down after the trial, and the NACSW cale
   - Upcoming NACSW trials with an `EventLink`, soonest first.
   - Pages with no capture yet, or whose last capture is more than 30 days old.
   - One more capture in the 14 days before the trial, if the last one was earlier.
-  - At most 150 requests per run, 12 s apart. A failed URL is retried the following week.
+  - At most 60 requests per run, 12 s apart, so a backlog clears over several weeks. A failed URL is retried the following week.
+- **Time budget:** the step is killed at 90 min, so the script stops submitting at 40 min and stops status checks at 60 min.
+  - `archive_log.csv` is written after every request and result, so a cut-short run keeps its work.
+  - Captures still pending at the end are logged with their SPN2 `job_id` and checked first on the next run.
 - **Archive.org bot rules** (https://archive.org/developers/bots.html):
   - Every request sends a descriptive User-Agent (`ScentWorkTrialsMap-Archiver/1.0 (+repo URL; ...)`) and is authenticated.
   - Requests go one at a time with delays.
   - On HTTP 429/503 the script waits as long as `Retry-After` says (up to 10 min) and retries twice. If still throttled, it stops for this run and logs the rest for next week.
+- **Overlapping runs:** the workflow has a `concurrency` group, so a manual run and the scheduled run queue instead of racing. The commit step also does `git pull --rebase` before pushing. (An overlap on Oct 19, 2026 made the second run's push fail.)
 - **Log:** `archive_log.csv` is keyed by trial (Date + Location), not by URL, because past NACSW trials have no link left to match on. Rows of past trials are never updated, so they keep their last pre-trial capture.
 - **Timing:** a new capture appears on the map on the *next* run, because the main script reads the log before the archive step updates it.
 - **Map:** popups show "🗄️ Archived host page & premium (Wayback Machine) →" when `ArchiveLink` is set.

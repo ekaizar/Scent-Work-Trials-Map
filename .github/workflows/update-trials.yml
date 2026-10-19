@@ -8,6 +8,12 @@ on:
 permissions:
   contents: write
 
+# Never run two updates at once (e.g. a manual run overlapping the weekly one):
+# a second run waits for the first instead of racing it to push data.js.
+concurrency:
+  group: update-trials
+  cancel-in-progress: false
+
 jobs:
   scrape-and-deploy:
     # Pinned: ubuntu-latest moves to Ubuntu 26 from Oct 19, 2026, and the R
@@ -124,4 +130,6 @@ jobs:
           git add docs/data.js
           if [ -f archive_log.csv ]; then git add archive_log.csv; fi
           git diff --staged --quiet || git commit -m "Auto-update trials data"
+          # Pick up anything pushed while this run was working (e.g. code changes)
+          git pull --rebase origin main
           git push

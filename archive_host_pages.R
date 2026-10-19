@@ -20,9 +20,15 @@ library(dplyr)
 # final stretch before the trial.
 RECAPTURE_DAYS  <- 30   # re-capture anything whose last capture is older
 FINAL_DAYS      <- 14   # ...and capture once more within this many days of the trial
-MAX_PER_RUN     <- 150  # cap on new capture requests per run (first run has a backlog)
+MAX_PER_RUN     <- 60   # cap on new capture requests per run (a backlog clears over several weeks)
 REQUEST_DELAY   <- 12   # seconds between requests (SPN2 is rate-limited)
 STATUS_WAIT     <- 120  # seconds to wait before checking this run's jobs
+STATUS_ROUND    <- 60   # seconds between rounds of status checks
+# Time budget. The workflow step is killed at 90 min, so stop well before:
+# submissions end at SUBMIT_BUDGET, status checks at TOTAL_BUDGET. Jobs still
+# pending then are logged with their job id and checked on the next run.
+SUBMIT_BUDGET   <- 40   # minutes
+TOTAL_BUDGET    <- 60   # minutes
 LOG_FILE        <- "archive_log.csv"
 
 cat("\n============================================================\n")
@@ -84,28 +90,70 @@ ia_request <- function(method, url, ...) {
 }
 
 today <- Sys.Date()
+started <- Sys.time()
+minutes_used <- function() as.numeric(difftime(Sys.time(), started, units = "mins"))
 
 # --- Archive log -------------------------------------------------------------
 # One row per NACSW trial (Date + Location) and its host page URL: the latest
-# capture made before the trial, plus the last request and its outcome.
-# Keyed by trial, not URL, because the NACSW calendar drops a trial's link once
-# the trial is over, and hosts reuse one page for several trials.
-# Snapshot timestamps are Wayback's YYYYMMDDhhmmss.
-empty_log <- data.frame(
-  Date = character(), Location = character(),
-  url = character(), last_success = as.Date(character()),
-  snapshot_timestamp = character(), last_requested = as.Date(character()),
-  last_status = character(), last_message = character(),
-  stringsAsFactors = FALSE
-)
+# capture made before the trial, plus the last request, its outcome and SPN2
+# job id. Keyed by trial, not URL, because the NACSW calendar drops a trial's
+# link once the trial is over, and hosts reuse one page for several trials.
+# Snapshot timestamps are Wayback's YYYYMMDDhhmmss. The log is written after
+# every change, so a run that is cut short keeps what it did.
+LOG_COLS <- c("Date", "Location", "url", "last_success", "snapshot_timestamp",
+              "last_requested", "last_status", "last_message", "job_id")
+
 archive_log <- if (file.exists(LOG_FILE)) {
-  read.csv(LOG_FILE, stringsAsFactors = FALSE, colClasses = "character") %>%
-    mutate(last_success   = as.Date(na_if(last_success, "")),
-           last_requested = as.Date(na_if(last_requested, "")))
+  read.csv(LOG_FILE, stringsAsFactors = FALSE, colClasses = "character")
 } else {
-  empty_log
+  setNames(data.frame(matrix(character(), 0, length(LOG_COLS)),
+                      stringsAsFactors = FALSE), LOG_COLS)
 }
+for (col in setdiff(LOG_COLS, names(archive_log))) archive_log[[col]] <- ""
+archive_log <- archive_log[LOG_COLS]
+archive_log[is.na(archive_log)] <- ""
 cat("  • Archive log:", nrow(archive_log), "trials\n")
+
+save_log <- function() {
+  archive_log <<- archive_log[order(archive_log$Date, archive_log$Location), ]
+  write.csv(archive_log, LOG_FILE, row.names = FALSE)
+}
+
+# Record a capture request for every upcoming trial that uses this URL.
+log_request <- function(url, status, message = "", job_id = "") {
+  rows <- upcoming %>% filter(url == !!url) %>% select(Date, Location, url)
+  new_rows <- anti_join(rows, archive_log, by = c("Date", "Location", "url"))
+  if (nrow(new_rows) > 0) {
+    archive_log <<- bind_rows(archive_log, mutate(new_rows,
+      last_success = "", snapshot_timestamp = "", last_requested = "",
+      last_status = "", last_message = "", job_id = ""))
+  }
+  hit <- paste(archive_log$Date, archive_log$Location, archive_log$url) %in%
+    paste(rows$Date, rows$Location, rows$url)
+  archive_log$last_requested[hit] <<- format(today)
+  archive_log$last_status[hit]    <<- status
+  archive_log$last_message[hit]   <<- substr(trimws(message), 1, 200)
+  archive_log$job_id[hit]         <<- job_id
+  save_log()
+}
+
+# Record the outcome of a job on every trial row waiting on it.
+log_result <- function(job_id, st) {
+  hit <- archive_log$job_id == job_id
+  status <- if (is.null(st$status)) "pending" else st$status
+  if (identical(status, "pending")) return(invisible(FALSE))
+  ok <- identical(status, "success") && !is.null(st$timestamp)
+  if (ok) {
+    archive_log$last_success[hit]       <<- format(as.Date(substr(st$timestamp, 1, 8), "%Y%m%d"))
+    archive_log$snapshot_timestamp[hit] <<- st$timestamp
+  }
+  archive_log$last_status[hit]  <<- status
+  archive_log$last_message[hit] <<- substr(trimws(paste(c(st$status_ext, st$message),
+                                                         collapse = " ")), 1, 200)
+  archive_log$job_id[hit]       <<- ""
+  save_log()
+  invisible(TRUE)
+}
 
 # --- Which pages need a capture ----------------------------------------------
 trials <- read.csv("trials_for_google_sheets.csv", stringsAsFactors = FALSE)
@@ -120,6 +168,8 @@ max_date <- function(x) if (all(is.na(x))) as.Date(NA) else max(x, na.rm = TRUE)
 
 candidates <- upcoming %>%
   left_join(archive_log, by = c("Date", "Location", "url")) %>%
+  mutate(last_success   = as.Date(na_if(last_success, "")),
+         last_requested = as.Date(na_if(last_requested, ""))) %>%
   group_by(url) %>%
   summarize(
     next_trial     = min(as.Date(Date)),
@@ -133,7 +183,7 @@ candidates <- upcoming %>%
       last_success < today - RECAPTURE_DAYS |
       (next_trial - today <= FINAL_DAYS & last_success < next_trial - FINAL_DAYS)
   ) %>%
-  # Don't hammer a URL that was requested (and failed) in the last week
+  # Don't re-request a URL requested in the last week (failed, or still pending)
   filter(is.na(last_requested) | last_requested < today - 6 |
            last_status == "success") %>%
   arrange(next_trial) %>%   # soonest trials first: they disappear first
@@ -141,7 +191,7 @@ candidates <- upcoming %>%
 
 cat("  • Upcoming NACSW host pages needing a capture:", nrow(candidates), "\n\n")
 
-# --- Submit capture requests -------------------------------------------------
+# --- SPN2 calls ----------------------------------------------------------------
 submit_capture <- function(url) {
   resp <- ia_request(
     "POST", "https://web.archive.org/save",
@@ -172,13 +222,54 @@ check_status <- function(job_id) {
            error = function(e) list(status = "pending"))
 }
 
-jobs <- list()
+# Check every pending job once per round until all are done or time runs out.
+poll_jobs <- function(job_ids, budget_min) {
+  pending <- unique(job_ids[job_ids != ""])
+  while (length(pending) > 0 && minutes_used() < budget_min) {
+    still <- character()
+    for (j in pending) {
+      if (minutes_used() >= budget_min) { still <- c(still, j); next }
+      st <- check_status(j)
+      if (isTRUE(st$throttled)) {
+        cat("  ⚠️  Status checks rate-limited; leaving the rest for next run.\n")
+        return(invisible(NULL))
+      }
+      if (!log_result(j, st)) still <- c(still, j)
+      Sys.sleep(1)
+    }
+    pending <- still
+    if (length(pending) > 0 && minutes_used() < budget_min) Sys.sleep(STATUS_ROUND)
+  }
+  if (length(pending) > 0) {
+    cat("  •", length(pending), "captures still pending; will check next run.\n")
+  }
+}
+
+# --- 1. Results of jobs left pending by earlier runs ---------------------------
+old_jobs <- unique(archive_log$job_id[archive_log$last_status == "pending" &
+                                        archive_log$job_id != ""])
+if (length(old_jobs) > 0) {
+  cat("  • Checking", length(old_jobs), "captures pending from earlier runs...\n")
+  poll_jobs(old_jobs, budget_min = 10)
+}
+
+# --- 2. Submit new capture requests ------------------------------------------
+submitted <- character()
 for (i in seq_len(nrow(candidates))) {
+  if (minutes_used() >= SUBMIT_BUDGET) {
+    cat("  • Submission time budget used; remaining pages wait for next run.\n")
+    break
+  }
   url <- candidates$url[i]
   r <- submit_capture(url)
   cat(sprintf("  [%d/%d] %s -> %s\n", i, nrow(candidates), url,
               if (is.na(r$job_id)) paste("not submitted:", r$message) else "submitted"))
-  jobs[[url]] <- r
+  if (is.na(r$job_id)) {
+    log_request(url, "error", r$message)
+  } else {
+    log_request(url, "pending", job_id = r$job_id)
+    submitted <- c(submitted, r$job_id)
+  }
   if (isTRUE(r$throttled) ||
       grepl("too many|rate|limit", r$message, ignore.case = TRUE)) {
     cat("  ⚠️  Rate-limited by the Archive; stopping submissions for this run.\n")
@@ -187,77 +278,17 @@ for (i in seq_len(nrow(candidates))) {
   Sys.sleep(REQUEST_DELAY)
 }
 
-# --- Collect results ---------------------------------------------------------
-results <- list()
-status_throttled <- FALSE
-if (length(jobs) > 0) {
+# --- 3. Results of this run's jobs ---------------------------------------------
+if (length(submitted) > 0) {
   cat("\n  • Waiting", STATUS_WAIT, "s for captures to finish...\n")
   Sys.sleep(STATUS_WAIT)
-
-  for (url in names(jobs)) {
-    j <- jobs[[url]]
-    if (is.na(j$job_id)) {
-      results[[url]] <- list(status = "error", message = j$message, timestamp = NA)
-      next
-    }
-    # Once the Archive throttles status checks, stop asking this run; the
-    # remaining jobs are logged as pending and retried next week.
-    st <- if (status_throttled) list(status = "pending") else check_status(j$job_id)
-    if (isTRUE(st$throttled)) status_throttled <- TRUE
-    # Give slow captures (many outlinks) a few more chances
-    tries <- 0
-    while (identical(st$status, "pending") && !status_throttled && tries < 6) {
-      Sys.sleep(20); tries <- tries + 1
-      st <- check_status(j$job_id)
-      if (isTRUE(st$throttled)) status_throttled <- TRUE
-    }
-    results[[url]] <- list(
-      status    = if (is.null(st$status)) "pending" else st$status,
-      message   = paste(c(st$status_ext, st$message), collapse = " "),
-      timestamp = if (is.null(st$timestamp)) NA else st$timestamp
-    )
-    Sys.sleep(1)
-  }
+  poll_jobs(submitted, budget_min = TOTAL_BUDGET)
 }
 
-# --- Update the log ----------------------------------------------------------
-if (length(results) > 0) {
-  updates <- bind_rows(lapply(names(results), function(url) {
-    r <- results[[url]]
-    ok <- identical(r$status, "success") && !is.na(r$timestamp)
-    data.frame(
-      url = url,
-      new_success   = if (ok) as.Date(substr(r$timestamp, 1, 8), "%Y%m%d") else as.Date(NA),
-      new_timestamp = if (ok) r$timestamp else NA_character_,
-      new_status    = r$status,
-      new_message   = substr(trimws(r$message), 1, 200),
-      stringsAsFactors = FALSE
-    )
-  }))
-
-  # A capture of a URL applies to every upcoming trial that uses it. Rows of
-  # past trials are left alone, so they keep their last pre-trial capture.
-  archive_log <- archive_log %>%
-    full_join(inner_join(upcoming, updates, by = "url"),
-              by = c("Date", "Location", "url")) %>%
-    mutate(
-      in_run             = !is.na(new_status),
-      last_success       = coalesce(new_success, last_success),
-      snapshot_timestamp = coalesce(new_timestamp, snapshot_timestamp),
-      last_requested     = if_else(in_run, today, last_requested),
-      last_status        = if_else(in_run, new_status, last_status),
-      last_message       = if_else(in_run, new_message, last_message)
-    ) %>%
-    select(names(empty_log)) %>%
-    arrange(Date, Location)
-
-  write.csv(archive_log, LOG_FILE, row.names = FALSE, na = "")
-
-  counts <- table(updates$new_status)
-  cat("\n✓ Archive results:",
-      paste(names(counts), counts, sep = " = ", collapse = ", "), "\n")
-} else {
-  cat("✓ Nothing to archive this run.\n")
-}
-cat("  • Archive log now holds", nrow(archive_log), "trials,",
-    sum(!is.na(archive_log$last_success)), "with a successful capture\n\n")
+counts <- table(archive_log$last_status[archive_log$last_requested == format(today)])
+cat("\n✓ Requests made today:",
+    if (length(counts)) paste(names(counts), counts, sep = " = ", collapse = ", ") else "none",
+    "\n")
+cat("  • Archive log holds", nrow(archive_log), "trials,",
+    sum(archive_log$snapshot_timestamp != ""), "with a successful capture",
+    sprintf("(%.0f min)\n\n", minutes_used()))
